@@ -1,17 +1,22 @@
 package bundle
 
 import (
+	"context"
 	"os"
-	 "github.com/slidebolt/plugin-wiz/pkg/device"
-	 "github.com/slidebolt/plugin-wiz/pkg/logic"
-	"github.com/slidebolt/plugin-sdk"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/slidebolt/plugin-wiz/pkg/device"
+	"github.com/slidebolt/plugin-wiz/pkg/logic"
+	"github.com/slidebolt/plugin-sdk"
 )
 
 type WizPlugin struct {
 	bundle sdk.Bundle
 	client logic.WizClient
+	cancel context.CancelFunc
+	wait   func()
 }
 
 func (p *WizPlugin) Init(b sdk.Bundle) error {
@@ -34,15 +39,36 @@ func (p *WizPlugin) Init(b sdk.Bundle) error {
 	p.discoverStatic()
 
 	// Background Discovery Polling
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
+
+	var wg sync.WaitGroup
+	p.wait = wg.Wait
+
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		ticker := time.NewTicker(30 * time.Second)
-		for range ticker.C {
-			p.client.SendProbe()
-			p.discoverStatic()
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				p.client.SendProbe()
+				p.discoverStatic()
+			}
 		}
 	}()
 
 	return nil
+}
+
+func (p *WizPlugin) Shutdown() {
+	if p.cancel != nil {
+		p.cancel()
+		p.wait()
+	}
 }
 
 func (p *WizPlugin) discoverStatic() {
@@ -59,8 +85,10 @@ func (p *WizPlugin) discoverStatic() {
 	p.bundle.Log().Info("Wiz static discovery of: %s", hosts)
 	for _, host := range strings.Split(hosts, ",") {
 		host = strings.TrimSpace(host)
-		if host == "" { continue }
-		
+		if host == "" {
+			continue
+		}
+
 		cfg, err := p.client.GetSystemConfig(host)
 		if err == nil {
 			p.bundle.Log().Info("Wiz static discovery success: %s (mac: %s)", host, cfg.Mac)
@@ -71,6 +99,4 @@ func (p *WizPlugin) discoverStatic() {
 	}
 }
 
-func NewPlugin() sdk.Plugin {
-	return &WizPlugin{}
-}
+func NewPlugin() *WizPlugin { return &WizPlugin{} }

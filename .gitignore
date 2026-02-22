@@ -20,3 +20,6 @@ vendor/
 
 # Operating system files
 .DS_Store
+
+# Local notes
+TODO.md

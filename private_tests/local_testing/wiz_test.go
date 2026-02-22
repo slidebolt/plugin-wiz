@@ -129,3 +129,28 @@ func TestWizEndToEnd(t *testing.T) {
 
 	fmt.Println("Wiz End-to-End Test Passed!")
 }
+
+func TestWizShutdown(t *testing.T) {
+	b, err := framework.RegisterBundle("plugin-wiz-shutdown-test")
+	if err != nil {
+		t.Fatalf("Failed to register: %v", err)
+	}
+	defer os.RemoveAll("state")
+
+	p := bundle.NewPlugin()
+	if err := p.Init(b); err != nil {
+		t.Fatalf("Failed to init: %v", err)
+	}
+
+	// The probe goroutine is always started by Init regardless of config.
+	// Shutdown must cancel the ticker loop and return within 3s.
+	done := make(chan struct{})
+	go func() { p.Shutdown(); close(done) }()
+
+	select {
+	case <-done:
+		// Shutdown returned cleanly — probe goroutine exited.
+	case <-time.After(3 * time.Second):
+		t.Error("Shutdown did not return within 3s — probe goroutine may have leaked")
+	}
+}
