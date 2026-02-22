@@ -1,0 +1,26 @@
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Wiz Plugin Initializing...
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Wiz sending initial probe
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Wiz static discovery of: 192.168.1.60,192.168.1.61
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Wiz discovery response from 192.168.88.112 (mac: 6c299047f3cc)
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Device.OnCommand bound for device d3d51198-e68f-e1af-ec3f-71abf3ae82f3
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Entity.OnCommand bound for entity da5e092b-d53b-9338-867e-7d81e06a9f9f
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Registered Wiz Light at 192.168.88.112 (6c299047f3cc)
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Wiz discovery response from 192.168.88.51 (mac: 6c299047b27c)
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Device.OnCommand bound for device 021e8e59-a26c-cb7b-606f-7c939b943da7
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Entity.OnCommand bound for entity 17979ecb-e763-a0ff-c55d-8b5262c98658
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Registered Wiz Light at 192.168.88.51 (6c299047b27c)
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Wiz discovery response from 192.168.88.71 (mac: 6c299047c66c)
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Device.OnCommand bound for device 187cb9bd-2373-59cc-81e2-842b458e3348
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Entity.OnCommand bound for entity b4e1bd84-dab8-6f53-0128-674eec622e77
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Registered Wiz Light at 192.168.88.71 (6c299047c66c)
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Wiz discovery response from 192.168.88.71 (mac: 6c299047c66c)
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Device.OnCommand bound for device 187cb9bd-2373-59cc-81e2-842b458e3348
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Entity.OnCommand bound for entity b4e1bd84-dab8-6f53-0128-674eec622e77
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Wiz discovery response from 192.168.88.51 (mac: 6c299047b27c)
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Device.OnCommand bound for device 021e8e59-a26c-cb7b-606f-7c939b943da7
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Entity.OnCommand bound for entity 17979ecb-e763-a0ff-c55d-8b5262c98658
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Wiz discovery response from 192.168.88.112 (mac: 6c299047f3cc)
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Device.OnCommand bound for device d3d51198-e68f-e1af-ec3f-71abf3ae82f3
+[2026-02-22T14:22:02-06:00] [INFO] [plugin-wiz-shutdown-test] Entity.OnCommand bound for entity da5e092b-d53b-9338-867e-7d81e06a9f9f
+[2026-02-22T14:22:04-06:00] [ERROR] [plugin-wiz-shutdown-test] Wiz static discovery failed: 192.168.1.60: read udp 192.168.88.89:53094->192.168.1.60:38899: i/o timeout
+[2026-02-22T14:22:06-06:00] [ERROR] [plugin-wiz-shutdown-test] Wiz static discovery failed: 192.168.1.61: read udp 192.168.88.89:50389->192.168.1.61:38899: i/o timeout
