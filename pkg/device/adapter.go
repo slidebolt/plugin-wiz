@@ -213,11 +213,8 @@ func (a *wizAdapter) publishState(state map[string]interface{}) {
 		return
 	}
 
-	if !hasCustomScript(a.light) {
-		_ = a.light.UpdateState("active")
-	}
-	// power field is already in state
-	_ = a.light.Publish(fmt.Sprintf("entity.%s.state", a.light.ID()), state)
+	// This method now handles both persistence and bus publishing in one clean contract.
+	_ = a.light.UpdateProperties(state)
 }
 
 func toInt(v interface{}) (int, bool) {
