@@ -1,0 +1,22 @@
+# Binaries and executable tests
+bin/
+plugin-wiz
+*.test
+*.exe
+
+# Local development
+go.work
+go.work.sum
+
+# Docker Staging (Pre-GitHub)
+.stage/
+
+# Environment
+.env
+.env.local
+
+# Go
+vendor/
+
+# Operating system files
+.DS_Store
