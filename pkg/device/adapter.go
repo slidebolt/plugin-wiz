@@ -39,7 +39,7 @@ func Register(b sdk.Bundle, client logic.WizClient, ip string, mac string) {
 		a.ip = ip
 		a.mu.Unlock()
 		_ = a.device.UpdateRaw(map[string]interface{}{"ip": ip, "mac": sid})
-		a.bindCommands()
+		// Do not call bindCommands again as it appends to handlers
 		a.refreshState()
 		return
 	}

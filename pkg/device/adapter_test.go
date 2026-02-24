@@ -19,7 +19,7 @@ func (m *testWizClient) SendProbe() error { return nil }
 func (m *testWizClient) Listen(callback func(ip string, result logic.WizSystemConfig)) (func(), error) {
 	return func() {}, nil
 }
-func (m *testWizClient) SetPilot(ip string, params map[string]interface{}) error {
+func (m *testWizClient) SetPilot(ip string, mac string, params map[string]interface{}) error {
 	m.lastSetIP = ip
 	m.lastParams = params
 	for k, v := range params {
