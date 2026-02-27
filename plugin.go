@@ -51,6 +51,9 @@ func (p *WizPlugin) OnInitialize(config runner.Config, state types.Storage) (typ
 	if len(state.Data) > 0 {
 		_ = json.Unmarshal(state.Data, &p.bulbs)
 	}
+	if p.bulbs == nil {
+		p.bulbs = make(map[string]wizBulb)
+	}
 	log.Printf("plugin-wiz initializing")
 	return types.Manifest{ID: "plugin-wiz", Name: "Wiz Plugin", Version: "1.0.0"}, state
 }
