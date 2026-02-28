@@ -29,6 +29,7 @@ type wizBulb struct {
 type WizPlugin struct {
 	client     WizClient
 	eventSink  runner.EventSink
+	rawStore   runner.RawStore
 	stopListen func()
 
 	mu    sync.RWMutex
@@ -48,9 +49,7 @@ func NewWizPlugin(client WizClient) *WizPlugin {
 
 func (p *WizPlugin) OnInitialize(config runner.Config, state types.Storage) (types.Manifest, types.Storage) {
 	p.eventSink = config.EventSink
-	if len(state.Data) > 0 {
-		_ = json.Unmarshal(state.Data, &p.bulbs)
-	}
+	p.rawStore = config.RawStore
 	if p.bulbs == nil {
 		p.bulbs = make(map[string]wizBulb)
 	}
@@ -79,12 +78,7 @@ func (p *WizPlugin) OnShutdown() {
 func (p *WizPlugin) OnHealthCheck() (string, error) { return "perfect", nil }
 
 func (p *WizPlugin) OnStorageUpdate(current types.Storage) (types.Storage, error) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	out := current
-	b, _ := json.Marshal(p.bulbs)
-	out.Data = b
-	return out, nil
+	return current, nil
 }
 
 func (p *WizPlugin) OnDeviceCreate(dev types.Device) (types.Device, error) { return dev, nil }
@@ -93,25 +87,39 @@ func (p *WizPlugin) OnDeviceDelete(id string) error                        { ret
 
 func (p *WizPlugin) OnDevicesList(current []types.Device) ([]types.Device, error) {
 	p.triggerDiscovery()
+
+	if p.rawStore != nil {
+		for _, dev := range current {
+			mac := normalizeMAC(dev.SourceID)
+			p.mu.RLock()
+			_, known := p.bulbs[mac]
+			p.mu.RUnlock()
+			if known {
+				continue
+			}
+			raw, err := p.rawStore.ReadRawDevice(dev.ID)
+			if err != nil || len(raw) == 0 {
+				continue
+			}
+			var b wizBulb
+			if err := json.Unmarshal(raw, &b); err == nil && b.MAC != "" {
+				p.mu.Lock()
+				p.bulbs[b.MAC] = b
+				p.mu.Unlock()
+			}
+		}
+	}
+
 	existing := map[string]types.Device{}
 	for _, d := range current {
 		existing[d.ID] = d
 	}
 	for _, bulb := range p.snapshotBulbs() {
 		id := deviceIDForMAC(bulb.MAC)
-		cfgData, _ := json.Marshal(map[string]any{
-			"ip":               bulb.IP,
-			"mac":              bulb.MAC,
-			"supports_rgb":     bulb.SupportsRGB,
-			"supports_temp":    bulb.SupportsTemp,
-			"supports_scene":   bulb.SupportsScene,
-			"supports_dimming": bulb.SupportsDimming,
-		})
 		discoveredDev := types.Device{
 			ID:         id,
 			SourceID:   bulb.MAC,
 			SourceName: "WiZ Light",
-			Config:     types.Storage{Meta: "wiz", Data: cfgData},
 		}
 		if existingDev, ok := existing[id]; ok {
 			existing[id] = runner.ReconcileDevice(existingDev, discoveredDev)
@@ -190,6 +198,11 @@ func (p *WizPlugin) OnCommand(cmd types.Command, entity types.Entity) (types.Ent
 	}
 	if err := p.client.SetPilot(bulb.IP, bulb.MAC, params); err != nil {
 		return entity, err
+	}
+	if p.rawStore != nil {
+		if sentRaw, err := json.Marshal(params); err == nil {
+			_ = p.rawStore.WriteRawEntity(entity.DeviceID, entity.ID, sentRaw)
+		}
 	}
 	store := light.Bind(&entity)
 	if err := store.SetDesiredFromCommand(lc); err != nil {
@@ -295,6 +308,13 @@ func (p *WizPlugin) upsertBulb(ip, mac string) {
 		b.SupportsScene = true
 	}
 	p.bulbs[n] = b
+
+	deviceID := deviceIDForMAC(n)
+	if raw, err := json.Marshal(b); err == nil {
+		if p.rawStore != nil {
+			_ = p.rawStore.WriteRawDevice(deviceID, raw)
+		}
+	}
 }
 
 func (p *WizPlugin) snapshotBulbs() []wizBulb {
