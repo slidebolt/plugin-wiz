@@ -70,6 +70,12 @@ func (p *WizPlugin) OnReady() {
 	p.triggerDiscovery()
 }
 
+func (p *WizPlugin) OnShutdown() {
+	if p.stopListen != nil {
+		p.stopListen()
+	}
+}
+
 func (p *WizPlugin) OnHealthCheck() (string, error) { return "perfect", nil }
 
 func (p *WizPlugin) OnStorageUpdate(current types.Storage) (types.Storage, error) {
