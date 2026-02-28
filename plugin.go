@@ -114,6 +114,11 @@ func (p *WizPlugin) OnDevicesList(current []types.Device) ([]types.Device, error
 			LocalName:  "WiZ " + shortMAC(bulb.MAC),
 			Config:     types.Storage{Meta: "wiz", Data: cfgData},
 		}
+		if existingDev, ok := existing[id]; ok {
+			if existingDev.LocalName != "" {
+				d.LocalName = existingDev.LocalName
+			}
+		}
 		existing[id] = d
 	}
 	out := make([]types.Device, 0, len(existing))
