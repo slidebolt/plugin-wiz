@@ -107,19 +107,17 @@ func (p *WizPlugin) OnDevicesList(current []types.Device) ([]types.Device, error
 			"supports_scene":   bulb.SupportsScene,
 			"supports_dimming": bulb.SupportsDimming,
 		})
-		d := types.Device{
+		discoveredDev := types.Device{
 			ID:         id,
 			SourceID:   bulb.MAC,
 			SourceName: "WiZ Light",
-			LocalName:  "WiZ " + shortMAC(bulb.MAC),
 			Config:     types.Storage{Meta: "wiz", Data: cfgData},
 		}
 		if existingDev, ok := existing[id]; ok {
-			if existingDev.LocalName != "" {
-				d.LocalName = existingDev.LocalName
-			}
+			existing[id] = runner.ReconcileDevice(existingDev, discoveredDev)
+		} else {
+			existing[id] = runner.ReconcileDevice(types.Device{}, discoveredDev)
 		}
-		existing[id] = d
 	}
 	out := make([]types.Device, 0, len(existing))
 	for _, d := range existing {
