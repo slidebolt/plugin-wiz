@@ -339,6 +339,8 @@ func (p *WizPlugin) findByDeviceID(deviceID string) (wizBulb, bool) {
 }
 
 func commandToPilotParams(cmd light.Command) (map[string]any, error) {
+	testMode := strings.ToLower(os.Getenv("WIZ_TEST_MODE")) == "true"
+
 	switch cmd.Type {
 	case light.ActionTurnOn:
 		return map[string]any{"state": true}, nil
@@ -348,13 +350,33 @@ func commandToPilotParams(cmd light.Command) (map[string]any, error) {
 		if cmd.Brightness == nil {
 			return nil, fmt.Errorf("brightness is required")
 		}
-		return map[string]any{"dimming": *cmd.Brightness}, nil
+		brightness := *cmd.Brightness
+		if testMode && brightness > 10 {
+			brightness = 10
+		}
+		return map[string]any{"dimming": brightness}, nil
 	case light.ActionSetRGB:
 		if cmd.RGB == nil || len(*cmd.RGB) != 3 {
 			return nil, fmt.Errorf("rgb must have 3 values")
 		}
 		rgb := *cmd.RGB
-		return map[string]any{"r": rgb[0], "g": rgb[1], "b": rgb[2]}, nil
+		r, g, b := rgb[0], rgb[1], rgb[2]
+		if testMode {
+			if r > 20 {
+				r = 20
+			}
+			if g > 20 {
+				g = 20
+			}
+			if b > 20 {
+				b = 20
+			}
+		}
+		params := map[string]any{"r": r, "g": g, "b": b}
+		if testMode {
+			params["dimming"] = 10
+		}
+		return params, nil
 	case light.ActionSetTemperature:
 		if cmd.Temperature == nil {
 			return nil, fmt.Errorf("temperature is required")
