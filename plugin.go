@@ -55,7 +55,7 @@ func (p *WizPlugin) OnInitialize(config runner.Config, state types.Storage) (typ
 		p.bulbs = make(map[string]wizBulb)
 	}
 	log.Printf("plugin-wiz initializing")
-	return types.Manifest{ID: "plugin-wiz", Name: "Wiz Plugin", Version: "1.0.0"}, state
+	return types.Manifest{ID: "plugin-wiz", Name: "Wiz Plugin", Version: "1.0.0", Schemas: types.CoreDomains()}, state
 }
 
 func (p *WizPlugin) OnReady() {
@@ -136,7 +136,7 @@ func (p *WizPlugin) OnDevicesList(current []types.Device) ([]types.Device, error
 	for _, d := range existing {
 		out = append(out, d)
 	}
-	return out, nil
+	return runner.EnsureCoreDevice("plugin-wiz", out), nil
 }
 
 func (p *WizPlugin) OnDeviceSearch(q types.SearchQuery, results []types.Device) ([]types.Device, error) {
@@ -155,6 +155,7 @@ func (p *WizPlugin) OnEntityUpdate(ent types.Entity) (types.Entity, error) { ret
 func (p *WizPlugin) OnEntityDelete(deviceID, entityID string) error        { return nil }
 
 func (p *WizPlugin) OnEntitiesList(deviceID string, current []types.Entity) ([]types.Entity, error) {
+	current = runner.EnsureCoreEntities("plugin-wiz", deviceID, current)
 	bulb, ok := p.findByDeviceID(deviceID)
 	if !ok {
 		return current, nil
@@ -176,7 +177,7 @@ func (p *WizPlugin) OnEntitiesList(deviceID string, current []types.Entity) ([]t
 	return append(current, ent), nil
 }
 
-func (p *WizPlugin) OnCommandTyped(req types.CommandRequest[types.GenericPayload], entity types.Entity) (types.Entity, error) {
+func (p *WizPlugin) OnCommand(req types.Command, entity types.Entity) (types.Entity, error) {
 	if entity.Domain != light.Type {
 		return entity, fmt.Errorf("unsupported domain: %s", entity.Domain)
 	}
@@ -185,7 +186,7 @@ func (p *WizPlugin) OnCommandTyped(req types.CommandRequest[types.GenericPayload
 		return entity, fmt.Errorf("wiz bulb not found for device %s", entity.DeviceID)
 	}
 	lc := light.Command{}
-	if err := decodeGenericPayload(req.Payload, &lc); err != nil {
+	if err := json.Unmarshal(req.Payload, &lc); err != nil {
 		return entity, err
 	}
 	if err := light.ValidateCommand(lc); err != nil {
@@ -227,26 +228,26 @@ func (p *WizPlugin) OnCommandTyped(req types.CommandRequest[types.GenericPayload
 	if p.eventSink != nil {
 		deviceID := entity.DeviceID
 		entityID := entity.ID
-		correlationID := req.CommandID
+		correlationID := req.ID
 		go func() {
 			time.Sleep(20 * time.Millisecond)
-			_ = p.eventSink.EmitTypedEvent(types.InboundEventTyped[types.GenericPayload]{
+			_ = p.eventSink.EmitEvent(types.InboundEvent{
 				DeviceID:      deviceID,
 				EntityID:      entityID,
 				CorrelationID: correlationID,
-				Payload:       rawToGeneric(payload),
+				Payload:       json.RawMessage(payload),
 			})
 		}()
 	}
 	return entity, nil
 }
 
-func (p *WizPlugin) OnEventTyped(evt types.EventTyped[types.GenericPayload], entity types.Entity) (types.Entity, error) {
+func (p *WizPlugin) OnEvent(evt types.Event, entity types.Entity) (types.Entity, error) {
 	if entity.Domain != light.Type {
 		return entity, fmt.Errorf("unsupported domain: %s", entity.Domain)
 	}
 	le := light.Event{}
-	if err := decodeGenericPayload(evt.Payload, &le); err != nil {
+	if err := json.Unmarshal(evt.Payload, &le); err != nil {
 		return entity, err
 	}
 	if err := light.ValidateEvent(le); err != nil {
@@ -259,26 +260,11 @@ func (p *WizPlugin) OnEventTyped(evt types.EventTyped[types.GenericPayload], ent
 	if err := store.SetReportedFromEvent(le); err != nil {
 		return entity, err
 	}
-	entity.Data.SyncStatus = "in_sync"
-	return entity, nil
-}
-
-func decodeGenericPayload(payload types.GenericPayload, out any) error {
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		return err
+		entity.Data.SyncStatus = "in_sync"
+		return entity, nil
 	}
-	return json.Unmarshal(raw, out)
-}
-
-func rawToGeneric(raw []byte) types.GenericPayload {
-	out := types.GenericPayload{}
-	_ = json.Unmarshal(raw, &out)
-	return out
-}
-
-func (p *WizPlugin) triggerDiscovery() {
-	if !atomic.CompareAndSwapInt32(&p.discovering, 0, 1) {
+	
+	func (p *WizPlugin) triggerDiscovery() {	if !atomic.CompareAndSwapInt32(&p.discovering, 0, 1) {
 		return
 	}
 	go func() {
