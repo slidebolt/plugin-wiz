@@ -34,3 +34,14 @@ The plugin supports the standard commands for the `light` domain, which are tran
 -   `set_rgb`
 -   `set_temperature`
 -   `set_scene`
+
+#### Standalone Discovery Mode
+
+This plugin supports a standalone discovery mode for rapid testing and diagnostics without requiring the full Slidebolt stack (NATS, Gateway, etc.).
+
+To run discovery and output the results to JSON:
+```bash
+./plugin-wiz -discover
+```
+
+**Note**: Ensure any required environment variables (e.g., API keys, URLs) are set before running.

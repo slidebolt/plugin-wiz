@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -67,6 +68,10 @@ func (p *WizPlugin) OnReady() {
 	}
 	p.stopListen = stop
 	p.triggerDiscovery()
+}
+
+func (p *WizPlugin) WaitReady(ctx context.Context) error {
+	return nil
 }
 
 func (p *WizPlugin) OnShutdown() {
@@ -171,7 +176,7 @@ func (p *WizPlugin) OnEntitiesList(deviceID string, current []types.Entity) ([]t
 	return append(current, ent), nil
 }
 
-func (p *WizPlugin) OnCommand(cmd types.Command, entity types.Entity) (types.Entity, error) {
+func (p *WizPlugin) OnCommandTyped(req types.CommandRequest[types.GenericPayload], entity types.Entity) (types.Entity, error) {
 	if entity.Domain != light.Type {
 		return entity, fmt.Errorf("unsupported domain: %s", entity.Domain)
 	}
@@ -179,8 +184,11 @@ func (p *WizPlugin) OnCommand(cmd types.Command, entity types.Entity) (types.Ent
 	if !ok {
 		return entity, fmt.Errorf("wiz bulb not found for device %s", entity.DeviceID)
 	}
-	lc, err := light.ParseCommand(cmd)
-	if err != nil {
+	lc := light.Command{}
+	if err := decodeGenericPayload(req.Payload, &lc); err != nil {
+		return entity, err
+	}
+	if err := light.ValidateCommand(lc); err != nil {
 		return entity, err
 	}
 
@@ -219,26 +227,29 @@ func (p *WizPlugin) OnCommand(cmd types.Command, entity types.Entity) (types.Ent
 	if p.eventSink != nil {
 		deviceID := entity.DeviceID
 		entityID := entity.ID
-		correlationID := cmd.ID
+		correlationID := req.CommandID
 		go func() {
 			time.Sleep(20 * time.Millisecond)
-			_ = p.eventSink.EmitEvent(types.InboundEvent{
+			_ = p.eventSink.EmitTypedEvent(types.InboundEventTyped[types.GenericPayload]{
 				DeviceID:      deviceID,
 				EntityID:      entityID,
 				CorrelationID: correlationID,
-				Payload:       payload,
+				Payload:       rawToGeneric(payload),
 			})
 		}()
 	}
 	return entity, nil
 }
 
-func (p *WizPlugin) OnEvent(evt types.Event, entity types.Entity) (types.Entity, error) {
+func (p *WizPlugin) OnEventTyped(evt types.EventTyped[types.GenericPayload], entity types.Entity) (types.Entity, error) {
 	if entity.Domain != light.Type {
 		return entity, fmt.Errorf("unsupported domain: %s", entity.Domain)
 	}
-	le, err := light.ParseEvent(evt)
-	if err != nil {
+	le := light.Event{}
+	if err := decodeGenericPayload(evt.Payload, &le); err != nil {
+		return entity, err
+	}
+	if err := light.ValidateEvent(le); err != nil {
 		return entity, err
 	}
 	if len(le.AvailableActions) > 0 {
@@ -250,6 +261,20 @@ func (p *WizPlugin) OnEvent(evt types.Event, entity types.Entity) (types.Entity,
 	}
 	entity.Data.SyncStatus = "in_sync"
 	return entity, nil
+}
+
+func decodeGenericPayload(payload types.GenericPayload, out any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, out)
+}
+
+func rawToGeneric(raw []byte) types.GenericPayload {
+	out := types.GenericPayload{}
+	_ = json.Unmarshal(raw, &out)
+	return out
 }
 
 func (p *WizPlugin) triggerDiscovery() {
