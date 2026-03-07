@@ -4,8 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
-	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -13,12 +11,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/slidebolt/plugin-wiz/pkg/wiz"
 	"github.com/slidebolt/sdk-entities/light"
 	runner "github.com/slidebolt/sdk-runner"
 	"github.com/slidebolt/sdk-types"
 )
 
-type wizBulb struct {
+type WizBulb struct {
 	MAC             string `json:"mac"`
 	IP              string `json:"ip"`
 	SupportsRGB     bool   `json:"supports_rgb"`
@@ -28,42 +27,38 @@ type wizBulb struct {
 }
 
 type WizPlugin struct {
-	client     WizClient
+	client     wiz.Client
 	eventSink  runner.EventSink
 	rawStore   runner.RawStore
 	stopListen func()
 
-	mu    sync.RWMutex
-	bulbs map[string]wizBulb
-
 	discoveryMu   sync.Mutex
 	lastDiscovery time.Time
 	discovering   int32
+	discoveryDone chan struct{} // signals when discovery completes
 }
 
-func NewWizPlugin(client WizClient) *WizPlugin {
+func NewWizPlugin(client wiz.Client) *WizPlugin {
 	if client == nil {
-		client = &RealWizClient{}
+		client = wiz.NewRealClient()
 	}
-	return &WizPlugin{client: client, bulbs: map[string]wizBulb{}}
+	return &WizPlugin{
+		client:        client,
+		discoveryDone: make(chan struct{}),
+	}
 }
 
 func (p *WizPlugin) OnInitialize(config runner.Config, state types.Storage) (types.Manifest, types.Storage) {
 	p.eventSink = config.EventSink
 	p.rawStore = config.RawStore
-	if p.bulbs == nil {
-		p.bulbs = make(map[string]wizBulb)
-	}
-	log.Printf("plugin-wiz initializing")
 	return types.Manifest{ID: "plugin-wiz", Name: "Wiz Plugin", Version: "1.0.0", Schemas: types.CoreDomains()}, state
 }
 
 func (p *WizPlugin) OnReady() {
-	stop, err := p.client.Listen(func(ip string, result WizSystemConfig) {
+	stop, err := p.client.Listen(func(ip string, result wiz.SystemConfig) {
 		p.upsertBulb(ip, result.Mac)
 	})
 	if err != nil {
-		log.Printf("plugin-wiz listen failed: %v", err)
 		return
 	}
 	p.stopListen = stop
@@ -71,7 +66,12 @@ func (p *WizPlugin) OnReady() {
 }
 
 func (p *WizPlugin) WaitReady(ctx context.Context) error {
-	return nil
+	select {
+	case <-p.discoveryDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (p *WizPlugin) OnShutdown() {
@@ -93,45 +93,35 @@ func (p *WizPlugin) OnDeviceDelete(id string) error                        { ret
 func (p *WizPlugin) OnDevicesList(current []types.Device) ([]types.Device, error) {
 	p.triggerDiscovery()
 
-	if p.rawStore != nil {
-		for _, dev := range current {
-			mac := normalizeMAC(dev.SourceID)
-			p.mu.RLock()
-			_, known := p.bulbs[mac]
-			p.mu.RUnlock()
-			if known {
-				continue
-			}
-			raw, err := p.rawStore.ReadRawDevice(dev.ID)
-			if err != nil || len(raw) == 0 {
-				continue
-			}
-			var b wizBulb
-			if err := json.Unmarshal(raw, &b); err == nil && b.MAC != "" {
-				p.mu.Lock()
-				p.bulbs[b.MAC] = b
-				p.mu.Unlock()
-			}
-		}
-	}
-
 	existing := map[string]types.Device{}
 	for _, d := range current {
 		existing[d.ID] = d
 	}
-	for _, bulb := range p.snapshotBulbs() {
-		id := deviceIDForMAC(bulb.MAC)
-		discoveredDev := types.Device{
-			ID:         id,
-			SourceID:   bulb.MAC,
-			SourceName: "WiZ Light",
-		}
-		if existingDev, ok := existing[id]; ok {
-			existing[id] = runner.ReconcileDevice(existingDev, discoveredDev)
-		} else {
-			existing[id] = runner.ReconcileDevice(types.Device{}, discoveredDev)
+
+	// Check raw store for any devices not in current
+	if p.rawStore != nil {
+		for _, dev := range current {
+			raw, err := p.rawStore.ReadRawDevice(dev.ID)
+			if err != nil || len(raw) == 0 {
+				continue
+			}
+			var b WizBulb
+			if err := json.Unmarshal(raw, &b); err == nil && b.MAC != "" {
+				id := deviceIDForMAC(b.MAC)
+				discoveredDev := types.Device{
+					ID:         id,
+					SourceID:   b.MAC,
+					SourceName: "WiZ Light",
+				}
+				if existingDev, ok := existing[id]; ok {
+					existing[id] = runner.ReconcileDevice(existingDev, discoveredDev)
+				} else {
+					existing[id] = runner.ReconcileDevice(types.Device{}, discoveredDev)
+				}
+			}
 		}
 	}
+
 	out := make([]types.Device, 0, len(existing))
 	for _, d := range existing {
 		out = append(out, d)
@@ -205,9 +195,17 @@ func (p *WizPlugin) OnCommand(req types.Command, entity types.Entity) (types.Ent
 	if err != nil {
 		return entity, err
 	}
+
 	if err := p.client.SetPilot(bulb.IP, bulb.MAC, params); err != nil {
+		// Map error to sync status
+		entity.Data.SyncStatus = types.SyncStatusFailed
+		errorMap := map[string]string{"error": mapErrorToMessage(err)}
+		if rawErr, err := json.Marshal(errorMap); err == nil {
+			entity.Data.Reported = rawErr
+		}
 		return entity, err
 	}
+
 	if p.rawStore != nil {
 		if sentRaw, err := json.Marshal(params); err == nil {
 			_ = p.rawStore.WriteRawEntity(entity.DeviceID, entity.ID, sentRaw)
@@ -217,7 +215,7 @@ func (p *WizPlugin) OnCommand(req types.Command, entity types.Entity) (types.Ent
 	if err := store.SetDesiredFromCommand(lc); err != nil {
 		return entity, err
 	}
-	entity.Data.SyncStatus = "pending"
+	entity.Data.SyncStatus = types.SyncStatusPending
 
 	evt := light.Event{Type: lc.Type, Cause: "wiz_ack", AvailableActions: entity.Actions}
 	evt.Brightness = lc.Brightness
@@ -260,16 +258,24 @@ func (p *WizPlugin) OnEvent(evt types.Event, entity types.Entity) (types.Entity,
 	if err := store.SetReportedFromEvent(le); err != nil {
 		return entity, err
 	}
-		entity.Data.SyncStatus = "in_sync"
-		return entity, nil
-	}
-	
-	func (p *WizPlugin) triggerDiscovery() {	if !atomic.CompareAndSwapInt32(&p.discovering, 0, 1) {
+	entity.Data.SyncStatus = types.SyncStatusSynced
+	return entity, nil
+}
+
+func (p *WizPlugin) triggerDiscovery() {
+	if !atomic.CompareAndSwapInt32(&p.discovering, 0, 1) {
 		return
 	}
 	go func() {
 		defer atomic.StoreInt32(&p.discovering, 0)
 		p.discover()
+		// Signal discovery complete (for discovery mode)
+		select {
+		case <-p.discoveryDone:
+			// already closed
+		default:
+			close(p.discoveryDone)
+		}
 	}()
 }
 
@@ -285,9 +291,9 @@ func (p *WizPlugin) discover() {
 	_ = p.client.SendProbe()
 	hosts := parseStaticHosts(os.Getenv("WIZ_STATIC_HOSTS"))
 	if len(hosts) == 0 {
-		hosts = localSubnetCandidates()
+		hosts = wiz.LocalSubnetCandidates()
 	}
-	probeHostsConcurrently(hosts, 64, func(host string) {
+	wiz.ProbeHostsConcurrently(hosts, 64, func(host string) {
 		cfg, err := p.client.GetSystemConfig(host)
 		if err != nil || cfg == nil || cfg.Mac == "" {
 			return
@@ -301,52 +307,40 @@ func (p *WizPlugin) upsertBulb(ip, mac string) {
 		return
 	}
 	n := normalizeMAC(mac)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	b := p.bulbs[n]
-	b.MAC = n
-	b.IP = ip
-	if !b.SupportsDimming {
-		b.SupportsDimming = true
-	}
-	if !b.SupportsTemp {
-		b.SupportsTemp = true
-	}
-	if !b.SupportsRGB {
-		b.SupportsRGB = true
-	}
-	if !b.SupportsScene {
-		b.SupportsScene = true
-	}
-	p.bulbs[n] = b
 
+	// Write individual device raw data
 	deviceID := deviceIDForMAC(n)
-	if raw, err := json.Marshal(b); err == nil {
-		if p.rawStore != nil {
+	if p.rawStore != nil {
+		b := WizBulb{
+			MAC:             n,
+			IP:              ip,
+			SupportsDimming: true,
+			SupportsTemp:    true,
+			SupportsRGB:     true,
+			SupportsScene:   true,
+		}
+		if raw, err := json.Marshal(b); err == nil {
 			_ = p.rawStore.WriteRawDevice(deviceID, raw)
 		}
 	}
 }
 
-func (p *WizPlugin) snapshotBulbs() []wizBulb {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	out := make([]wizBulb, 0, len(p.bulbs))
-	for _, b := range p.bulbs {
-		out = append(out, b)
+func (p *WizPlugin) findByDeviceID(deviceID string) (WizBulb, bool) {
+	if p.rawStore == nil {
+		return WizBulb{}, false
 	}
-	return out
-}
 
-func (p *WizPlugin) findByDeviceID(deviceID string) (wizBulb, bool) {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	for _, b := range p.bulbs {
-		if deviceIDForMAC(b.MAC) == deviceID {
-			return b, true
-		}
+	// Try to read from individual device raw store
+	raw, err := p.rawStore.ReadRawDevice(deviceID)
+	if err != nil || len(raw) == 0 {
+		return WizBulb{}, false
 	}
-	return wizBulb{}, false
+
+	var b WizBulb
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return WizBulb{}, false
+	}
+	return b, true
 }
 
 func commandToPilotParams(cmd light.Command) (map[string]any, error) {
@@ -407,7 +401,7 @@ func commandToPilotParams(cmd light.Command) (map[string]any, error) {
 	}
 }
 
-func bulbActions(b wizBulb) []string {
+func bulbActions(b WizBulb) []string {
 	actions := []string{light.ActionTurnOn, light.ActionTurnOff}
 	if b.SupportsDimming {
 		actions = append(actions, light.ActionSetBrightness)
@@ -436,67 +430,6 @@ func parseStaticHosts(raw string) []string {
 	return out
 }
 
-func localSubnetCandidates() []string {
-	set := map[string]struct{}{}
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 {
-			continue
-		}
-		addrs, err := iface.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, addr := range addrs {
-			ipnet, ok := addr.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip4 := ipnet.IP.To4()
-			if ip4 == nil {
-				continue
-			}
-			if !ip4.IsPrivate() || ip4.IsLoopback() {
-				continue
-			}
-			for i := 1; i <= 254; i++ {
-				host := fmt.Sprintf("%d.%d.%d.%d", ip4[0], ip4[1], ip4[2], i)
-				set[host] = struct{}{}
-			}
-		}
-	}
-	out := make([]string, 0, len(set))
-	for host := range set {
-		out = append(out, host)
-	}
-	return out
-}
-
-func probeHostsConcurrently(hosts []string, workers int, fn func(host string)) {
-	if workers <= 0 {
-		workers = 1
-	}
-	var idx int64
-	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				j := int(atomic.AddInt64(&idx, 1) - 1)
-				if j >= len(hosts) {
-					return
-				}
-				fn(hosts[j])
-			}
-		}()
-	}
-	wg.Wait()
-}
-
 func normalizeMAC(mac string) string {
 	repl := strings.NewReplacer(":", "", "-", "", ".", "")
 	return strings.ToLower(repl.Replace(strings.TrimSpace(mac)))
@@ -520,4 +453,17 @@ func containsAction(actions []string, action string) bool {
 		}
 	}
 	return false
+}
+
+func mapErrorToMessage(err error) string {
+	switch {
+	case wiz.IsDeviceOffline(err):
+		return "Device is offline"
+	case wiz.IsTimeout(err):
+		return "Request timed out"
+	case wiz.IsUnauthorized(err):
+		return "Authentication failed"
+	default:
+		return err.Error()
+	}
 }

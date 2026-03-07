@@ -5,19 +5,21 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/slidebolt/plugin-wiz/pkg/wiz"
 	"github.com/slidebolt/sdk-types"
 )
 
 func TestProofOfValidation(t *testing.T) {
-	p := NewWizPlugin(nil)
-	
-	// 1. Setup a valid bulb in the plugin's internal state
-	// The plugin has a bug where it keys by MAC but searches by DeviceID,
-	// so we use the DeviceID as the key here to pass the check.
+	p := NewWizPlugin(&wiz.MockClient{})
+
+	// Setup mock raw store with a bulb
+	mockStore := newMockRawStore()
+	p.rawStore = mockStore
+
 	deviceID := "wiz-001122334455"
-	p.mu.Lock()
-	p.bulbs[deviceID] = wizBulb{IP: "127.0.0.1", MAC: "00:11:22:33:44:55"}
-	p.mu.Unlock()
+	bulb := WizBulb{IP: "127.0.0.1", MAC: "00:11:22:33:44:55"}
+	bulbRaw, _ := json.Marshal(bulb)
+	mockStore.WriteRawDevice(deviceID, bulbRaw)
 
 	entity := types.Entity{
 		ID:       "light",

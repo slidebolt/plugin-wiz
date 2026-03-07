@@ -7,11 +7,7 @@ import (
 )
 
 func main() {
-	r, err := runner.NewRunner(NewWizPlugin(nil))
-	if err != nil {
-		log.Fatal(err)
-	}
-	if err := r.Run(); err != nil {
+	if err := runner.RunCLI(func() runner.Plugin { return NewWizPlugin(nil) }); err != nil {
 		log.Fatal(err)
 	}
 }

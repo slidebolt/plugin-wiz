@@ -1,39 +1,42 @@
-package main
+package wiz
 
 import (
 	"encoding/json"
-	"fmt"
 	"net"
 	"strings"
 	"time"
 )
 
-type WizClient interface {
+type Client interface {
 	SendProbe() error
-	Listen(callback func(ip string, result WizSystemConfig)) (func(), error)
+	Listen(callback func(ip string, result SystemConfig)) (func(), error)
 	SetPilot(ip string, mac string, params map[string]any) error
 	GetPilot(ip string) (map[string]any, error)
-	GetSystemConfig(ip string) (*WizSystemConfig, error)
+	GetSystemConfig(ip string) (*SystemConfig, error)
 	Close() error
 }
 
-type RealWizClient struct {
+type RealClient struct {
 	udpConn *net.UDPConn
 }
 
-type WizSystemConfig struct {
+func NewRealClient() *RealClient {
+	return &RealClient{}
+}
+
+type SystemConfig struct {
 	Mac string `json:"mac"`
 }
 
-type wizConfigResponse struct {
-	Result WizSystemConfig `json:"result"`
+type configResponse struct {
+	Result SystemConfig `json:"result"`
 }
 
-type wizMapResponse struct {
+type mapResponse struct {
 	Result map[string]any `json:"result"`
 }
 
-func (c *RealWizClient) SendProbe() error {
+func (c *RealClient) SendProbe() error {
 	sysConfig := []byte(`{"method":"getSystemConfig","params":{}}`)
 
 	conn := c.udpConn
@@ -42,7 +45,7 @@ func (c *RealWizClient) SendProbe() error {
 		var err error
 		conn, err = net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 		if err != nil {
-			return err
+			return NewError("network", err)
 		}
 		ephemeral = true
 	}
@@ -84,14 +87,14 @@ func (c *RealWizClient) SendProbe() error {
 	return nil
 }
 
-func (c *RealWizClient) Listen(callback func(ip string, result WizSystemConfig)) (func(), error) {
+func (c *RealClient) Listen(callback func(ip string, result SystemConfig)) (func(), error) {
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: 38899}
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		addr = &net.UDPAddr{IP: net.IPv4zero, Port: 0}
 		conn, err = net.ListenUDP("udp", addr)
 		if err != nil {
-			return nil, err
+			return nil, NewError("network", err)
 		}
 	}
 	c.udpConn = conn
@@ -104,7 +107,7 @@ func (c *RealWizClient) Listen(callback func(ip string, result WizSystemConfig))
 			if err != nil {
 				return
 			}
-			var resp wizConfigResponse
+			var resp configResponse
 			if err := json.Unmarshal(buf[:n], &resp); err != nil {
 				continue
 			}
@@ -117,7 +120,7 @@ func (c *RealWizClient) Listen(callback func(ip string, result WizSystemConfig))
 	return stop, nil
 }
 
-func (c *RealWizClient) SetPilot(ip string, _ string, params map[string]any) error {
+func (c *RealClient) SetPilot(ip string, _ string, params map[string]any) error {
 	payload := map[string]any{
 		"method": "setPilot",
 		"params": params,
@@ -125,80 +128,140 @@ func (c *RealWizClient) SetPilot(ip string, _ string, params map[string]any) err
 	data, _ := json.Marshal(payload)
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(strings.TrimSpace(ip), "38899"))
 	if err != nil {
-		return err
+		return NewError("network", err)
 	}
 	conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
-		return err
+		return NewError("network", err)
 	}
 	defer conn.Close()
 	_, err = conn.WriteToUDP(data, addr)
-	return err
+	if err != nil {
+		return NewError("network", err)
+	}
+	return nil
 }
 
-func (c *RealWizClient) GetPilot(ip string) (map[string]any, error) {
+func (c *RealClient) GetPilot(ip string) (map[string]any, error) {
 	return c.query(ip, `{"method":"getPilot","params":{}}`)
 }
 
-func (c *RealWizClient) GetSystemConfig(ip string) (*WizSystemConfig, error) {
+func (c *RealClient) GetSystemConfig(ip string) (*SystemConfig, error) {
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(strings.TrimSpace(ip), "38899"))
 	if err != nil {
-		return nil, err
+		return nil, NewError("network", err)
 	}
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
-		return nil, err
+		return nil, NewError("network", err)
 	}
 	defer conn.Close()
 
 	if _, err = conn.Write([]byte(`{"method":"getSystemConfig","params":{}}`)); err != nil {
-		return nil, err
+		return nil, NewError("network", err)
 	}
 	buf := make([]byte, 2048)
 	_ = conn.SetReadDeadline(time.Now().Add(350 * time.Millisecond))
 	n, _, err := conn.ReadFromUDP(buf)
 	if err != nil {
-		return nil, err
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return nil, NewError("timeout", err)
+		}
+		return nil, NewError("offline", err)
 	}
-	var resp wizConfigResponse
+	var resp configResponse
 	if err := json.Unmarshal(buf[:n], &resp); err != nil {
-		return nil, err
+		return nil, NewError("network", err)
 	}
 	if resp.Result.Mac == "" {
-		return nil, fmt.Errorf("missing mac in system config")
+		return nil, NewError("offline", ErrDeviceOffline)
 	}
 	return &resp.Result, nil
 }
 
-func (c *RealWizClient) query(ip string, payload string) (map[string]any, error) {
+func (c *RealClient) query(ip string, payload string) (map[string]any, error) {
 	addr, err := net.ResolveUDPAddr("udp", net.JoinHostPort(strings.TrimSpace(ip), "38899"))
 	if err != nil {
-		return nil, err
+		return nil, NewError("network", err)
 	}
 	conn, err := net.DialUDP("udp", nil, addr)
 	if err != nil {
-		return nil, err
+		return nil, NewError("network", err)
 	}
 	defer conn.Close()
 	if _, err = conn.Write([]byte(payload)); err != nil {
-		return nil, err
+		return nil, NewError("network", err)
 	}
 	buf := make([]byte, 2048)
 	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
 	n, _, err := conn.ReadFromUDP(buf)
 	if err != nil {
-		return nil, err
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return nil, NewError("timeout", err)
+		}
+		return nil, NewError("offline", err)
 	}
-	var resp wizMapResponse
+	var resp mapResponse
 	if err := json.Unmarshal(buf[:n], &resp); err != nil {
-		return nil, err
+		return nil, NewError("network", err)
 	}
 	return resp.Result, nil
 }
 
-func (c *RealWizClient) Close() error {
+func (c *RealClient) Close() error {
 	if c.udpConn != nil {
 		return c.udpConn.Close()
+	}
+	return nil
+}
+
+type MockClient struct {
+	SendProbeFunc       func() error
+	ListenFunc          func(callback func(ip string, result SystemConfig)) (func(), error)
+	SetPilotFunc        func(ip string, mac string, params map[string]any) error
+	GetPilotFunc        func(ip string) (map[string]any, error)
+	GetSystemConfigFunc func(ip string) (*SystemConfig, error)
+	CloseFunc           func() error
+}
+
+func (m *MockClient) SendProbe() error {
+	if m.SendProbeFunc != nil {
+		return m.SendProbeFunc()
+	}
+	return nil
+}
+
+func (m *MockClient) Listen(callback func(ip string, result SystemConfig)) (func(), error) {
+	if m.ListenFunc != nil {
+		return m.ListenFunc(callback)
+	}
+	return func() {}, nil
+}
+
+func (m *MockClient) SetPilot(ip string, mac string, params map[string]any) error {
+	if m.SetPilotFunc != nil {
+		return m.SetPilotFunc(ip, mac, params)
+	}
+	return nil
+}
+
+func (m *MockClient) GetPilot(ip string) (map[string]any, error) {
+	if m.GetPilotFunc != nil {
+		return m.GetPilotFunc(ip)
+	}
+	return nil, nil
+}
+
+func (m *MockClient) GetSystemConfig(ip string) (*SystemConfig, error) {
+	if m.GetSystemConfigFunc != nil {
+		return m.GetSystemConfigFunc(ip)
+	}
+	return nil, nil
+}
+
+func (m *MockClient) Close() error {
+	if m.CloseFunc != nil {
+		return m.CloseFunc()
 	}
 	return nil
 }
