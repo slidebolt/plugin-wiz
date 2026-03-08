@@ -24,3 +24,5 @@ vendor/
 # Local notes
 TODO.md
 TASKS/
+
+scripts/.release_guard
