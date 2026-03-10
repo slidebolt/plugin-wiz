@@ -82,7 +82,7 @@ func (p *WizPlugin) OnShutdown() {
 
 func (p *WizPlugin) OnHealthCheck() (string, error) { return "perfect", nil }
 
-func (p *WizPlugin) OnStorageUpdate(current types.Storage) (types.Storage, error) {
+func (p *WizPlugin) OnConfigUpdate(current types.Storage) (types.Storage, error) {
 	return current, nil
 }
 
@@ -90,7 +90,7 @@ func (p *WizPlugin) OnDeviceCreate(dev types.Device) (types.Device, error) { ret
 func (p *WizPlugin) OnDeviceUpdate(dev types.Device) (types.Device, error) { return dev, nil }
 func (p *WizPlugin) OnDeviceDelete(id string) error                        { return nil }
 
-func (p *WizPlugin) OnDevicesList(current []types.Device) ([]types.Device, error) {
+func (p *WizPlugin) OnDeviceDiscover(current []types.Device) ([]types.Device, error) {
 	p.triggerDiscovery()
 
 	existing := map[string]types.Device{}
@@ -144,7 +144,7 @@ func (p *WizPlugin) OnEntityCreate(ent types.Entity) (types.Entity, error) {
 func (p *WizPlugin) OnEntityUpdate(ent types.Entity) (types.Entity, error) { return ent, nil }
 func (p *WizPlugin) OnEntityDelete(deviceID, entityID string) error        { return nil }
 
-func (p *WizPlugin) OnEntitiesList(deviceID string, current []types.Entity) ([]types.Entity, error) {
+func (p *WizPlugin) OnEntityDiscover(deviceID string, current []types.Entity) ([]types.Entity, error) {
 	current = runner.EnsureCoreEntities("plugin-wiz", deviceID, current)
 	bulb, ok := p.findByDeviceID(deviceID)
 	if !ok {
@@ -222,6 +222,17 @@ func (p *WizPlugin) OnCommand(req types.Command, entity types.Entity) (types.Ent
 	evt.RGB = lc.RGB
 	evt.Temperature = lc.Temperature
 	evt.Scene = lc.Scene
+	switch lc.Type {
+	case light.ActionSetRGB:
+		mode := light.ColorModeRGB
+		evt.ColorMode = &mode
+	case light.ActionSetTemperature:
+		mode := light.ColorModeTemperature
+		evt.ColorMode = &mode
+	case light.ActionSetScene:
+		mode := light.ColorModeScene
+		evt.ColorMode = &mode
+	}
 	payload, _ := json.Marshal(evt)
 	if p.eventSink != nil {
 		deviceID := entity.DeviceID
