@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -264,4 +265,100 @@ func (m *MockClient) Close() error {
 		return m.CloseFunc()
 	}
 	return nil
+}
+
+// SimulatedDevice describes a mock WiZ device for integration testing.
+type SimulatedDevice struct {
+	IP  string
+	MAC string
+}
+
+// ParseMockDevices parses WIZ_MOCK_DEVICES format: "ip1:mac1,ip2:mac2".
+func ParseMockDevices(raw string) []SimulatedDevice {
+	var out []SimulatedDevice
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		idx := strings.LastIndex(part, ":")
+		if idx <= 0 || idx == len(part)-1 {
+			continue
+		}
+		out = append(out, SimulatedDevice{
+			IP:  strings.TrimSpace(part[:idx]),
+			MAC: strings.TrimSpace(part[idx+1:]),
+		})
+	}
+	return out
+}
+
+// NewSimulatedMockClient returns a MockClient that fires the Listen callback
+// for each configured device immediately and responds to GetSystemConfig/GetPilot.
+func NewSimulatedMockClient(devices []SimulatedDevice) *MockClient {
+	pilotsMu := &sync.Mutex{}
+	pilots := map[string]map[string]any{}
+
+	return &MockClient{
+		ListenFunc: func(callback func(ip string, result SystemConfig)) (func(), error) {
+			go func() {
+				for _, d := range devices {
+					callback(d.IP, SystemConfig{Mac: d.MAC})
+				}
+			}()
+			return func() {}, nil
+		},
+		GetSystemConfigFunc: func(ip string) (*SystemConfig, error) {
+			for _, d := range devices {
+				if d.IP == ip {
+					return &SystemConfig{Mac: d.MAC}, nil
+				}
+			}
+			return nil, NewError("offline", ErrDeviceOffline)
+		},
+		SetPilotFunc: func(ip, mac string, params map[string]any) error {
+			pilotsMu.Lock()
+			current := clonePilot(pilots[ip])
+			if current == nil {
+				current = map[string]any{}
+			}
+			for k, v := range params {
+				current[k] = v
+			}
+			if hasPilotAttribute(params) {
+				current["state"] = true
+			}
+			pilots[ip] = current
+			pilotsMu.Unlock()
+			return nil
+		},
+		GetPilotFunc: func(ip string) (map[string]any, error) {
+			pilotsMu.Lock()
+			defer pilotsMu.Unlock()
+			if p, ok := pilots[ip]; ok {
+				return clonePilot(p), nil
+			}
+			return map[string]any{}, nil
+		},
+	}
+}
+
+func hasPilotAttribute(params map[string]any) bool {
+	for _, key := range []string{"dimming", "r", "g", "b", "temp", "sceneId"} {
+		if _, ok := params[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func clonePilot(src map[string]any) map[string]any {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]any, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }

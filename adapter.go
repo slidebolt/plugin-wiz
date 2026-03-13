@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/slidebolt/plugin-wiz/pkg/wiz"
+	regsvc "github.com/slidebolt/registry"
 	"github.com/slidebolt/sdk-entities/light"
 	runner "github.com/slidebolt/sdk-runner"
 	"github.com/slidebolt/sdk-types"
@@ -26,16 +27,22 @@ type WizBulb struct {
 	SupportsDimming bool   `json:"supports_dimming"`
 }
 
-type WizPlugin struct {
-	client     wiz.Client
-	eventSink  runner.EventSink
-	rawStore   runner.RawStore
-	stopListen func()
+type wizState struct {
+	Bulbs map[string]WizBulb `json:"bulbs"` // deviceID → WizBulb
+}
 
+type WizPlugin struct {
+	client  wiz.Client
+	reg     *regsvc.Registry
+	events  runner.EventService
+	bulbs   map[string]WizBulb
+	bulbsMu sync.RWMutex
+
+	stopListen    func()
+	discoveryDone chan struct{}
+	discovering   int32
 	discoveryMu   sync.Mutex
 	lastDiscovery time.Time
-	discovering   int32
-	discoveryDone chan struct{} // signals when discovery completes
 }
 
 func NewWizPlugin(client wiz.Client) *WizPlugin {
@@ -44,28 +51,43 @@ func NewWizPlugin(client wiz.Client) *WizPlugin {
 	}
 	return &WizPlugin{
 		client:        client,
+		bulbs:         make(map[string]WizBulb),
 		discoveryDone: make(chan struct{}),
 	}
 }
 
-func (p *WizPlugin) OnInitialize(config runner.Config, state types.Storage) (types.Manifest, types.Storage) {
-	p.eventSink = config.EventSink
-	p.rawStore = config.RawStore
-	return types.Manifest{ID: "plugin-wiz", Name: "Wiz Plugin", Version: "1.0.0", Schemas: types.CoreDomains()}, state
+func (p *WizPlugin) Initialize(ctx runner.PluginContext) (types.Manifest, error) {
+	p.reg = ctx.Registry
+	p.events = ctx.Events
+
+	if state, ok := ctx.Registry.LoadState(); ok && len(state.Data) > 0 {
+		var ws wizState
+		if err := json.Unmarshal(state.Data, &ws); err == nil && ws.Bulbs != nil {
+			p.bulbsMu.Lock()
+			p.bulbs = ws.Bulbs
+			p.bulbsMu.Unlock()
+			for _, bulb := range ws.Bulbs {
+				p.registerBulb(bulb)
+			}
+		}
+	}
+
+	return types.Manifest{ID: "plugin-wiz", Name: "Wiz Plugin", Version: "1.0.0", Schemas: types.CoreDomains()}, nil
 }
 
-func (p *WizPlugin) OnReady() {
+func (p *WizPlugin) Start(ctx context.Context) error {
 	stop, err := p.client.Listen(func(ip string, result wiz.SystemConfig) {
 		p.upsertBulb(ip, result.Mac)
 	})
 	if err != nil {
-		return
+		return nil
 	}
 	p.stopListen = stop
 	p.triggerDiscovery()
+	return p.waitReady(ctx)
 }
 
-func (p *WizPlugin) WaitReady(ctx context.Context) error {
+func (p *WizPlugin) waitReady(ctx context.Context) error {
 	select {
 	case <-p.discoveryDone:
 		return nil
@@ -74,100 +96,24 @@ func (p *WizPlugin) WaitReady(ctx context.Context) error {
 	}
 }
 
-func (p *WizPlugin) OnShutdown() {
+func (p *WizPlugin) Stop() error {
 	if p.stopListen != nil {
 		p.stopListen()
 	}
+	return nil
 }
 
-func (p *WizPlugin) OnHealthCheck() (string, error) { return "perfect", nil }
-
-func (p *WizPlugin) OnConfigUpdate(current types.Storage) (types.Storage, error) {
-	return current, nil
+func (p *WizPlugin) OnReset() error {
+	p.bulbsMu.Lock()
+	p.bulbs = make(map[string]WizBulb)
+	p.bulbsMu.Unlock()
+	if p.reg != nil {
+		return p.reg.DeleteState()
+	}
+	return nil
 }
 
-func (p *WizPlugin) OnDeviceCreate(dev types.Device) (types.Device, error) { return dev, nil }
-func (p *WizPlugin) OnDeviceUpdate(dev types.Device) (types.Device, error) { return dev, nil }
-func (p *WizPlugin) OnDeviceDelete(id string) error                        { return nil }
-
-func (p *WizPlugin) OnDeviceDiscover(current []types.Device) ([]types.Device, error) {
-	p.triggerDiscovery()
-
-	existing := map[string]types.Device{}
-	for _, d := range current {
-		existing[d.ID] = d
-	}
-
-	// Check raw store for any devices not in current
-	if p.rawStore != nil {
-		for _, dev := range current {
-			raw, err := p.rawStore.ReadRawDevice(dev.ID)
-			if err != nil || len(raw) == 0 {
-				continue
-			}
-			var b WizBulb
-			if err := json.Unmarshal(raw, &b); err == nil && b.MAC != "" {
-				id := deviceIDForMAC(b.MAC)
-				discoveredDev := types.Device{
-					ID:         id,
-					SourceID:   b.MAC,
-					SourceName: "WiZ Light",
-				}
-				if existingDev, ok := existing[id]; ok {
-					existing[id] = runner.ReconcileDevice(existingDev, discoveredDev)
-				} else {
-					existing[id] = runner.ReconcileDevice(types.Device{}, discoveredDev)
-				}
-			}
-		}
-	}
-
-	out := make([]types.Device, 0, len(existing))
-	for _, d := range existing {
-		out = append(out, d)
-	}
-	return runner.EnsureCoreDevice("plugin-wiz", out), nil
-}
-
-func (p *WizPlugin) OnDeviceSearch(q types.SearchQuery, results []types.Device) ([]types.Device, error) {
-	return results, nil
-}
-
-func (p *WizPlugin) OnEntityCreate(ent types.Entity) (types.Entity, error) {
-	if ent.Domain == light.Type {
-		store := light.Bind(&ent)
-		store.EnsureDefaultActions()
-	}
-	return ent, nil
-}
-
-func (p *WizPlugin) OnEntityUpdate(ent types.Entity) (types.Entity, error) { return ent, nil }
-func (p *WizPlugin) OnEntityDelete(deviceID, entityID string) error        { return nil }
-
-func (p *WizPlugin) OnEntityDiscover(deviceID string, current []types.Entity) ([]types.Entity, error) {
-	current = runner.EnsureCoreEntities("plugin-wiz", deviceID, current)
-	bulb, ok := p.findByDeviceID(deviceID)
-	if !ok {
-		return current, nil
-	}
-	entityID := entityIDForMAC(bulb.MAC)
-	for _, e := range current {
-		if e.ID == entityID {
-			return current, nil
-		}
-	}
-	actions := bulbActions(bulb)
-	ent := types.Entity{
-		ID:        entityID,
-		DeviceID:  deviceID,
-		Domain:    light.Type,
-		LocalName: "Light",
-		Actions:   actions,
-	}
-	return append(current, ent), nil
-}
-
-func (p *WizPlugin) OnCommand(req types.Command, entity types.Entity) (types.Entity, error) {
+func (p *WizPlugin) runCommand(req types.Command, entity types.Entity) (types.Entity, error) {
 	if entity.Domain != light.Type {
 		return entity, fmt.Errorf("unsupported domain: %s", entity.Domain)
 	}
@@ -197,18 +143,21 @@ func (p *WizPlugin) OnCommand(req types.Command, entity types.Entity) (types.Ent
 	}
 
 	if err := p.client.SetPilot(bulb.IP, bulb.MAC, params); err != nil {
-		// Map error to sync status
 		entity.Data.SyncStatus = types.SyncStatusFailed
 		errorMap := map[string]string{"error": mapErrorToMessage(err)}
-		if rawErr, err := json.Marshal(errorMap); err == nil {
+		if rawErr, jsonErr := json.Marshal(errorMap); jsonErr == nil {
 			entity.Data.Reported = rawErr
+		}
+		if p.reg != nil {
+			_ = p.reg.SaveEntity(entity)
 		}
 		return entity, err
 	}
 
-	if p.rawStore != nil {
-		if sentRaw, err := json.Marshal(params); err == nil {
-			_ = p.rawStore.WriteRawEntity(entity.DeviceID, entity.ID, sentRaw)
+	// Fetch current entity state from registry before updating.
+	if p.reg != nil {
+		if ent, ok := p.reg.GetEntity(p.reg.Namespace(), entity.DeviceID, entity.ID); ok {
+			entity = ent
 		}
 	}
 	store := light.Bind(&entity)
@@ -217,30 +166,22 @@ func (p *WizPlugin) OnCommand(req types.Command, entity types.Entity) (types.Ent
 	}
 	entity.Data.SyncStatus = types.SyncStatusPending
 
-	evt := light.Event{Type: lc.Type, Cause: "wiz_ack", AvailableActions: entity.Actions}
-	evt.Brightness = lc.Brightness
-	evt.RGB = lc.RGB
-	evt.Temperature = lc.Temperature
-	evt.Scene = lc.Scene
-	switch lc.Type {
-	case light.ActionSetRGB:
-		mode := light.ColorModeRGB
-		evt.ColorMode = &mode
-	case light.ActionSetTemperature:
-		mode := light.ColorModeTemperature
-		evt.ColorMode = &mode
-	case light.ActionSetScene:
-		mode := light.ColorModeScene
-		evt.ColorMode = &mode
+	if p.reg != nil {
+		_ = p.reg.SaveEntity(entity)
 	}
-	payload, _ := json.Marshal(evt)
-	if p.eventSink != nil {
+
+	pilot, err := p.client.GetPilot(bulb.IP)
+	if err != nil {
+		pilot = nil
+	}
+	payload, _ := json.Marshal(lightEventPayload(lc, pilot, entity.Actions))
+	if p.events != nil {
 		deviceID := entity.DeviceID
 		entityID := entity.ID
 		correlationID := req.ID
 		go func() {
 			time.Sleep(20 * time.Millisecond)
-			_ = p.eventSink.EmitEvent(types.InboundEvent{
+			_ = p.events.PublishEvent(types.InboundEvent{
 				DeviceID:      deviceID,
 				EntityID:      entityID,
 				CorrelationID: correlationID,
@@ -251,26 +192,127 @@ func (p *WizPlugin) OnCommand(req types.Command, entity types.Entity) (types.Ent
 	return entity, nil
 }
 
-func (p *WizPlugin) OnEvent(evt types.Event, entity types.Entity) (types.Entity, error) {
-	if entity.Domain != light.Type {
-		return entity, fmt.Errorf("unsupported domain: %s", entity.Domain)
+func lightEventPayload(cmd light.Command, pilot map[string]any, actions []string) map[string]any {
+	payload := map[string]any{
+		"type":              cmd.Type,
+		"cause":             "wiz_ack",
+		"available_actions": actions,
 	}
-	le := light.Event{}
-	if err := json.Unmarshal(evt.Payload, &le); err != nil {
-		return entity, err
+
+	if power, ok := pilotBool(pilot, "state"); ok {
+		payload["power"] = power
+	} else {
+		switch cmd.Type {
+		case light.ActionTurnOn:
+			payload["power"] = true
+		case light.ActionTurnOff:
+			payload["power"] = false
+		}
 	}
-	if err := light.ValidateEvent(le); err != nil {
-		return entity, err
+
+	if brightness, ok := pilotInt(pilot, "dimming"); ok {
+		payload["brightness"] = brightness
+	} else if cmd.Brightness != nil {
+		payload["brightness"] = *cmd.Brightness
 	}
-	if len(le.AvailableActions) > 0 {
-		entity.Actions = append([]string(nil), le.AvailableActions...)
+
+	if rgb, ok := pilotRGB(pilot); ok {
+		payload["rgb"] = rgb
+		payload["color_mode"] = light.ColorModeRGB
+	} else if cmd.RGB != nil && len(*cmd.RGB) == 3 {
+		payload["rgb"] = append([]int(nil), (*cmd.RGB)...)
+		payload["color_mode"] = light.ColorModeRGB
 	}
-	store := light.Bind(&entity)
-	if err := store.SetReportedFromEvent(le); err != nil {
-		return entity, err
+
+	if temperature, ok := pilotInt(pilot, "temp"); ok {
+		payload["temperature"] = temperature
+		if _, hasRGB := payload["rgb"]; !hasRGB {
+			payload["color_mode"] = light.ColorModeTemperature
+		}
+	} else if cmd.Temperature != nil {
+		payload["temperature"] = *cmd.Temperature
+		if _, hasRGB := payload["rgb"]; !hasRGB {
+			payload["color_mode"] = light.ColorModeTemperature
+		}
 	}
-	entity.Data.SyncStatus = types.SyncStatusSynced
-	return entity, nil
+
+	if scene, ok := pilotScene(pilot); ok {
+		payload["scene"] = scene
+		if _, hasRGB := payload["rgb"]; !hasRGB {
+			if _, hasTemp := payload["temperature"]; !hasTemp {
+				payload["color_mode"] = light.ColorModeScene
+			}
+		}
+	} else if cmd.Scene != nil && *cmd.Scene != "" {
+		payload["scene"] = *cmd.Scene
+		if _, hasRGB := payload["rgb"]; !hasRGB {
+			if _, hasTemp := payload["temperature"]; !hasTemp {
+				payload["color_mode"] = light.ColorModeScene
+			}
+		}
+	}
+
+	return payload
+}
+
+func pilotBool(pilot map[string]any, key string) (bool, bool) {
+	if pilot == nil {
+		return false, false
+	}
+	v, ok := pilot[key]
+	if !ok {
+		return false, false
+	}
+	b, ok := v.(bool)
+	return b, ok
+}
+
+func pilotInt(pilot map[string]any, key string) (int, bool) {
+	if pilot == nil {
+		return 0, false
+	}
+	v, ok := pilot[key]
+	if !ok {
+		return 0, false
+	}
+	switch n := v.(type) {
+	case int:
+		return n, true
+	case int32:
+		return int(n), true
+	case int64:
+		return int(n), true
+	case float64:
+		return int(n), true
+	case json.Number:
+		i, err := n.Int64()
+		return int(i), err == nil
+	default:
+		return 0, false
+	}
+}
+
+func pilotRGB(pilot map[string]any) ([]int, bool) {
+	r, rok := pilotInt(pilot, "r")
+	g, gok := pilotInt(pilot, "g")
+	b, bok := pilotInt(pilot, "b")
+	if !rok || !gok || !bok {
+		return nil, false
+	}
+	return []int{r, g, b}, true
+}
+
+func pilotScene(pilot map[string]any) (string, bool) {
+	scene, ok := pilotInt(pilot, "sceneId")
+	if !ok {
+		return "", false
+	}
+	return strconv.Itoa(scene), true
+}
+
+func (p *WizPlugin) OnCommand(req types.Command, entity types.Entity) error {
+	_, err := p.runCommand(req, entity)
+	return err
 }
 
 func (p *WizPlugin) triggerDiscovery() {
@@ -280,10 +322,8 @@ func (p *WizPlugin) triggerDiscovery() {
 	go func() {
 		defer atomic.StoreInt32(&p.discovering, 0)
 		p.discover()
-		// Signal discovery complete (for discovery mode)
 		select {
 		case <-p.discoveryDone:
-			// already closed
 		default:
 			close(p.discoveryDone)
 		}
@@ -313,45 +353,64 @@ func (p *WizPlugin) discover() {
 	})
 }
 
+// registerBulb saves a bulb's device and entity to the registry.
+// Used on startup to re-register bulbs loaded from persisted state.
+func (p *WizPlugin) registerBulb(bulb WizBulb) {
+	deviceID := deviceIDForMAC(bulb.MAC)
+	_ = p.reg.SaveDevice(types.Device{
+		ID:         deviceID,
+		PluginID:   "plugin-wiz",
+		SourceID:   bulb.MAC,
+		SourceName: "WiZ Light",
+		Labels:     map[string][]string{"ip": {bulb.IP}},
+	})
+	_ = p.reg.SaveEntity(types.Entity{
+		ID:        "light",
+		DeviceID:  deviceID,
+		PluginID:  "plugin-wiz",
+		Domain:    light.Type,
+		LocalName: "Light",
+		Actions:   bulbActions(bulb),
+	})
+}
+
 func (p *WizPlugin) upsertBulb(ip, mac string) {
 	if mac == "" || ip == "" {
 		return
 	}
 	n := normalizeMAC(mac)
-
-	// Write individual device raw data
+	bulb := WizBulb{
+		MAC:             n,
+		IP:              ip,
+		SupportsRGB:     true,
+		SupportsTemp:    true,
+		SupportsScene:   true,
+		SupportsDimming: true,
+	}
 	deviceID := deviceIDForMAC(n)
-	if p.rawStore != nil {
-		b := WizBulb{
-			MAC:             n,
-			IP:              ip,
-			SupportsDimming: true,
-			SupportsTemp:    true,
-			SupportsRGB:     true,
-			SupportsScene:   true,
+
+	p.bulbsMu.Lock()
+	p.bulbs[deviceID] = bulb
+	snapshot := make(map[string]WizBulb, len(p.bulbs))
+	for k, v := range p.bulbs {
+		snapshot[k] = v
+	}
+	p.bulbsMu.Unlock()
+
+	if p.reg != nil {
+		ws := wizState{Bulbs: snapshot}
+		if data, err := json.Marshal(ws); err == nil {
+			_ = p.reg.SaveState(types.Storage{Data: data})
 		}
-		if raw, err := json.Marshal(b); err == nil {
-			_ = p.rawStore.WriteRawDevice(deviceID, raw)
-		}
+		p.registerBulb(bulb)
 	}
 }
 
 func (p *WizPlugin) findByDeviceID(deviceID string) (WizBulb, bool) {
-	if p.rawStore == nil {
-		return WizBulb{}, false
-	}
-
-	// Try to read from individual device raw store
-	raw, err := p.rawStore.ReadRawDevice(deviceID)
-	if err != nil || len(raw) == 0 {
-		return WizBulb{}, false
-	}
-
-	var b WizBulb
-	if err := json.Unmarshal(raw, &b); err != nil {
-		return WizBulb{}, false
-	}
-	return b, true
+	p.bulbsMu.RLock()
+	defer p.bulbsMu.RUnlock()
+	b, ok := p.bulbs[deviceID]
+	return b, ok
 }
 
 func commandToPilotParams(cmd light.Command) (map[string]any, error) {
@@ -447,15 +506,6 @@ func normalizeMAC(mac string) string {
 }
 
 func deviceIDForMAC(mac string) string { return "wiz-" + normalizeMAC(mac) }
-func entityIDForMAC(mac string) string { return "light-" + normalizeMAC(mac) }
-
-func shortMAC(mac string) string {
-	n := normalizeMAC(mac)
-	if len(n) <= 6 {
-		return strings.ToUpper(n)
-	}
-	return strings.ToUpper(n[len(n)-6:])
-}
 
 func containsAction(actions []string, action string) bool {
 	for _, a := range actions {
