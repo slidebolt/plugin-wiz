@@ -207,6 +207,10 @@ func (w *world) entityExists(pluginID, deviceID, entityID string) bool {
 
 // TestIntegration_BDD runs the Gherkin feature files against a live stack.
 func TestIntegration_BDD(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping BDD integration suite in short mode")
+	}
+
 	suite := godog.TestSuite{
 		ScenarioInitializer: func(sc *godog.ScenarioContext) {
 			// Use a scenario-scoped T so t.Setenv is cleaned up after each
