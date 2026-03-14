@@ -193,11 +193,8 @@ func (p *WizPlugin) runCommand(req types.Command, entity types.Entity) (types.En
 }
 
 func lightEventPayload(cmd light.Command, pilot map[string]any, actions []string) map[string]any {
-	payload := map[string]any{
-		"type":              cmd.Type,
-		"cause":             "wiz_ack",
-		"available_actions": actions,
-	}
+	_ = actions
+	payload := map[string]any{}
 
 	if power, ok := pilotBool(pilot, "state"); ok {
 		payload["power"] = power
