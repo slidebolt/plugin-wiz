@@ -26,3 +26,5 @@ TODO.md
 TASKS/
 
 scripts/.release_guard
+
+**/.env.local
