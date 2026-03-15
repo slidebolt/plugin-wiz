@@ -1,6 +1,6 @@
 //go:build integration
 
-//go:build !test_multi && !test_multi_local
+
 
 package main
 
