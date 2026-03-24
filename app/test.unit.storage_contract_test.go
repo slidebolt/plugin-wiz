@@ -7,11 +7,11 @@ import (
 
 	wizapp "github.com/slidebolt/plugin-wiz/app"
 	domain "github.com/slidebolt/sb-domain"
-	managersdk "github.com/slidebolt/sb-manager-sdk"
+	testkit "github.com/slidebolt/sb-testkit"
 )
 
 func TestStorageContract_WizEntityRoundTrips(t *testing.T) {
-	env := managersdk.NewTestEnv(t)
+	env := testkit.NewTestEnv(t)
 	env.Start("messenger")
 	env.Start("storage")
 

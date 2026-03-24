@@ -11,7 +11,7 @@ import (
 
 	app "github.com/slidebolt/plugin-wiz/app"
 	wiz "github.com/slidebolt/plugin-wiz/internal/wiz"
-	managersdk "github.com/slidebolt/sb-manager-sdk"
+	testkit "github.com/slidebolt/sb-testkit"
 )
 
 // TestDiscovery_PrintAllDevices discovers real Wiz bulbs on the network and
@@ -54,7 +54,7 @@ func TestDiscovery_PrintAllDevices(t *testing.T) {
 	// Now start the full plugin to see what entity keys get registered.
 	t.Log("\n=== Starting plugin to see registered entity keys ===")
 
-	env := managersdk.NewTestEnv(t)
+	env := testkit.NewTestEnv(t)
 	env.Start("messenger")
 	env.Start("storage")
 
