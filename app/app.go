@@ -20,7 +20,6 @@ import (
 
 const PluginID = "plugin-wiz"
 
-
 type App struct {
 	msg    messenger.Messenger
 	store  storage.Storage
@@ -105,7 +104,8 @@ func (a *App) discoveryLoop() {
 func (a *App) discoverAndRegister() error {
 	subnet := os.Getenv("WIZ_SUBNET")
 	if subnet == "" {
-		subnet = "192.168.88"
+		log.Println("plugin-wiz: WIZ_SUBNET not set; skipping discovery")
+		return nil
 	}
 	timeout := 500 * time.Millisecond
 	if t := os.Getenv("WIZ_TIMEOUT_MS"); t != "" {
