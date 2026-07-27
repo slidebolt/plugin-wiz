@@ -19,6 +19,11 @@ type configResponse struct {
 type pilotResponse struct {
 	Result map[string]any `json:"result"`
 }
+type setPilotResponse struct {
+	Result struct {
+		Success bool `json:"success"`
+	} `json:"result"`
+}
 type Device struct {
 	IP       string
 	Mac      string
@@ -122,6 +127,28 @@ func SetPilot(ip string, params map[string]any) error {
 		return err
 	}
 	defer conn.Close()
-	_, err = conn.WriteToUDP(data, addr)
-	return err
+	var lastErr error
+	buf := make([]byte, 2048)
+	for attempt := 0; attempt < 3; attempt++ {
+		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		if _, err = conn.WriteToUDP(data, addr); err != nil {
+			return err
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		n, _, err := conn.ReadFromUDP(buf)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var resp setPilotResponse
+		if err := json.Unmarshal(buf[:n], &resp); err != nil {
+			lastErr = err
+			continue
+		}
+		if !resp.Result.Success {
+			return fmt.Errorf("setPilot failed")
+		}
+		return nil
+	}
+	return fmt.Errorf("setPilot ack timeout for %s: %w", ip, lastErr)
 }

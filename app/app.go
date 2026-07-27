@@ -34,8 +34,14 @@ type App struct {
 	seen    map[string]struct{}
 }
 
-func New() *App                      { return &App{} }
-func (a *App) Devices() []wiz.Device { return a.devices }
+func New() *App { return &App{} }
+func (a *App) Devices() []wiz.Device {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	devices := make([]wiz.Device, len(a.devices))
+	copy(devices, a.devices)
+	return devices
+}
 
 func (a *App) Hello() contract.HelloResponse {
 	return contract.HelloResponse{ID: PluginID, Kind: contract.KindPlugin, ContractVersion: contract.ContractVersion, DependsOn: []string{"messenger", "storage"}}
@@ -118,7 +124,7 @@ func (a *App) discoverAndRegister() error {
 		return err
 	}
 	a.mu.Lock()
-	a.devices = devices
+	a.devices = mergeDevices(a.devices, devices)
 	a.mu.Unlock()
 	for _, dev := range devices {
 		deviceID := MakeDeviceID(dev.Mac)
@@ -157,6 +163,26 @@ func (a *App) discoverAndRegister() error {
 		}
 	}
 	return nil
+}
+
+func mergeDevices(known, discovered []wiz.Device) []wiz.Device {
+	merged := make([]wiz.Device, 0, len(known)+len(discovered))
+	indexByID := make(map[string]int, len(known)+len(discovered))
+	for _, dev := range known {
+		deviceID := MakeDeviceID(dev.Mac)
+		indexByID[deviceID] = len(merged)
+		merged = append(merged, dev)
+	}
+	for _, dev := range discovered {
+		deviceID := MakeDeviceID(dev.Mac)
+		if idx, ok := indexByID[deviceID]; ok {
+			merged[idx] = dev
+			continue
+		}
+		indexByID[deviceID] = len(merged)
+		merged = append(merged, dev)
+	}
+	return merged
 }
 
 func MakeDeviceID(mac string) string {
@@ -202,52 +228,64 @@ func (a *App) handleCommand(addr messenger.Address, cmd any) {
 	}
 	switch c := cmd.(type) {
 	case domain.LightTurnOn:
-		if err := wiz.SetPilot(ip, map[string]any{"state": true}); err == nil {
-			a.updateLightState(entity, func(s *domain.Light) { s.Power = true })
-		}
+		a.setPilotAndSave(addr, entity, ip, map[string]any{"state": true}, func(s *domain.Light) { s.Power = true })
 	case domain.LightTurnOff:
-		if err := wiz.SetPilot(ip, map[string]any{"state": false}); err == nil {
-			a.updateLightState(entity, func(s *domain.Light) { s.Power = false })
-		}
+		a.setPilotAndSave(addr, entity, ip, map[string]any{"state": false}, func(s *domain.Light) { s.Power = false })
 	case domain.LightSetBrightness:
-		if err := wiz.SetPilot(ip, map[string]any{"state": true, "dimming": c.Brightness}); err == nil {
-			a.updateLightState(entity, func(s *domain.Light) { s.Power = true; s.Brightness = c.Brightness })
-		}
+		a.setPilotAndSave(addr, entity, ip, map[string]any{"state": true, "dimming": c.Brightness}, func(s *domain.Light) {
+			s.Power = true
+			s.Brightness = c.Brightness
+		})
 	case domain.LightSetColorTemp:
 		kelvin := 1000000 / c.Mireds
 		payload := map[string]any{"state": true, "temp": kelvin}
 		if c.Brightness > 0 {
 			payload["dimming"] = c.Brightness
 		}
-		if err := wiz.SetPilot(ip, payload); err == nil {
-			a.updateLightState(entity, func(s *domain.Light) {
-				s.Power = true
-				s.Temperature = kelvin
-				s.ColorMode = "color_temp"
-				s.RGB = nil
-				if c.Brightness > 0 {
-					s.Brightness = c.Brightness
-				}
-			})
-		}
+		a.setPilotAndSave(addr, entity, ip, payload, func(s *domain.Light) {
+			s.Power = true
+			s.Temperature = kelvin
+			s.ColorMode = "color_temp"
+			s.RGB = nil
+			if c.Brightness > 0 {
+				s.Brightness = c.Brightness
+			}
+		})
 	case domain.LightSetRGB:
 		payload := map[string]any{"state": true, "r": c.R, "g": c.G, "b": c.B}
 		if c.Brightness > 0 {
 			payload["dimming"] = c.Brightness
 		}
-		if err := wiz.SetPilot(ip, payload); err == nil {
-			a.updateLightState(entity, func(s *domain.Light) {
-				s.Power = true
-				s.RGB = []int{c.R, c.G, c.B}
-				s.ColorMode = "rgb"
-				if c.Brightness > 0 {
-					s.Brightness = c.Brightness
-				}
-			})
-		}
+		a.setPilotAndSave(addr, entity, ip, payload, func(s *domain.Light) {
+			s.Power = true
+			s.RGB = []int{c.R, c.G, c.B}
+			s.ColorMode = "rgb"
+			if c.Brightness > 0 {
+				s.Brightness = c.Brightness
+			}
+		})
 	default:
 		log.Printf("plugin-wiz: unknown command %T for %s", cmd, addr.Key())
 	}
+}
+
+func (a *App) setPilotAndSave(addr messenger.Address, entity domain.Entity, ip string, payload map[string]any, fallback func(*domain.Light)) {
+	if err := wiz.SetPilot(ip, payload); err != nil {
+		log.Printf("plugin-wiz: command failed for %s at %s payload=%v: %v", addr.Key(), ip, payload, err)
+		return
+	}
+	if pilot, err := wiz.GetPilot(ip); err == nil {
+		entity.State = lightStateFromPilot(pilot)
+		if err := a.store.Save(entity); err != nil {
+			log.Printf("plugin-wiz: failed to update state for %s: %v", entity.ID, err)
+		} else {
+			log.Printf("plugin-wiz: command applied for %s at %s payload=%v", addr.Key(), ip, payload)
+		}
+		return
+	} else {
+		log.Printf("plugin-wiz: command acked but readback failed for %s at %s: %v", addr.Key(), ip, err)
+	}
+	a.updateLightState(entity, fallback)
 }
 
 func (a *App) updateLightState(entity domain.Entity, mutate func(*domain.Light)) {
