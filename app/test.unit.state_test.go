@@ -105,3 +105,29 @@ func TestUpdateLightState_ColorTempClearsRGBAndSetsMode(t *testing.T) {
 		t.Fatalf("Temperature = %d, want 2700", got.Temperature)
 	}
 }
+
+func TestHSToRGB(t *testing.T) {
+	tests := []struct {
+		name       string
+		hue        float64
+		saturation float64
+		want       []int
+	}{
+		{"red", 0, 100, []int{255, 0, 0}},
+		{"green", 120, 100, []int{0, 255, 0}},
+		{"blue", 240, 100, []int{0, 0, 255}},
+		{"white", 240, 0, []int{255, 255, 255}},
+		{"cyan half saturation", 180, 50, []int{128, 255, 255}},
+		{"hue wraps", 360, 100, []int{255, 0, 0}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r, g, b := hsToRGB(tt.hue, tt.saturation)
+			got := []int{r, g, b}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("hsToRGB(%v, %v) = %v, want %v", tt.hue, tt.saturation, got, tt.want)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -152,7 +153,7 @@ func (a *App) discoverAndRegister() error {
 		entity := domain.Entity{
 			ID: entityID, Plugin: PluginID, DeviceID: deviceID, Type: "light",
 			Name:     fmt.Sprintf("WiZ %s", dev.Mac[len(dev.Mac)-6:]),
-			Commands: []string{"light_turn_on", "light_turn_off", "light_set_brightness", "light_set_color_temp", "light_set_rgb"},
+			Commands: []string{"light_turn_on", "light_turn_off", "light_set_brightness", "light_set_color_temp", "light_set_rgb", "light_set_hs"},
 			State:    state,
 			Meta:     meta,
 		}
@@ -264,6 +265,20 @@ func (a *App) handleCommand(addr messenger.Address, cmd any) {
 				s.Brightness = c.Brightness
 			}
 		})
+	case domain.LightSetHS:
+		r, g, b := hsToRGB(c.Hue, c.Saturation)
+		payload := map[string]any{"state": true, "r": r, "g": g, "b": b}
+		if c.Brightness > 0 {
+			payload["dimming"] = c.Brightness
+		}
+		a.setPilotAndSave(addr, entity, ip, payload, func(s *domain.Light) {
+			s.Power = true
+			s.RGB = []int{r, g, b}
+			s.ColorMode = "rgb"
+			if c.Brightness > 0 {
+				s.Brightness = c.Brightness
+			}
+		})
 	default:
 		log.Printf("plugin-wiz: unknown command %T for %s", cmd, addr.Key())
 	}
@@ -318,4 +333,40 @@ func lightStateFromPilot(pilot map[string]any) domain.Light {
 		}
 	}
 	return state
+}
+
+func hsToRGB(hue, saturation float64) (int, int, int) {
+	h := math.Mod(hue, 360)
+	if h < 0 {
+		h += 360
+	}
+	s := saturation / 100
+	if s < 0 {
+		s = 0
+	}
+	if s > 1 {
+		s = 1
+	}
+
+	c := s
+	x := c * (1 - math.Abs(math.Mod(h/60, 2)-1))
+	m := 1 - c
+
+	var r1, g1, b1 float64
+	switch {
+	case h < 60:
+		r1, g1, b1 = c, x, 0
+	case h < 120:
+		r1, g1, b1 = x, c, 0
+	case h < 180:
+		r1, g1, b1 = 0, c, x
+	case h < 240:
+		r1, g1, b1 = 0, x, c
+	case h < 300:
+		r1, g1, b1 = x, 0, c
+	default:
+		r1, g1, b1 = c, 0, x
+	}
+
+	return int(math.Round((r1 + m) * 255)), int(math.Round((g1 + m) * 255)), int(math.Round((b1 + m) * 255))
 }
