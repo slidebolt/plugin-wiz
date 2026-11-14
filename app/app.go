@@ -45,7 +45,7 @@ func (a *App) Devices() []wiz.Device {
 }
 
 func (a *App) Hello() contract.HelloResponse {
-	return contract.HelloResponse{ID: PluginID, Kind: contract.KindPlugin, ContractVersion: contract.ContractVersion, DependsOn: []string{"messenger", "storage"}}
+	return contract.HelloResponse{ID: PluginID, Kind: contract.KindPlugin, ContractVersion: contract.ContractVersion, DependsOn: []string{"messenger", "storage"}, Definitions: contract.DescribePlugin("WiZ", "Discovers WiZ lighting and exposes shared light contracts.", "light")}
 }
 
 func (a *App) OnStart(deps map[string]json.RawMessage) (json.RawMessage, error) {
