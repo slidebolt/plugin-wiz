@@ -45,7 +45,10 @@ func (a *App) Devices() []wiz.Device {
 }
 
 func (a *App) Hello() contract.HelloResponse {
-	return contract.HelloResponse{ID: PluginID, Kind: contract.KindPlugin, ContractVersion: contract.ContractVersion, DependsOn: []string{"messenger", "storage"}, Definitions: contract.DescribePlugin("WiZ", "Discovers WiZ lighting and exposes shared light contracts.", "light")}
+	return contract.HelloResponse{ID: PluginID, Kind: contract.KindPlugin, ContractVersion: contract.ContractVersion, DependsOn: []string{"messenger", "storage"}, Definitions: contract.DescribePlugin("WiZ", "Discovers WiZ lighting and exposes shared light contracts.", "light"), Setup: contract.SelectableSetup("Devices",
+		contract.SetupField{Key: "subnet", Environment: "WIZ_SUBNET", Name: "Discovery subnet", Description: "Optional IPv4 subnet or broadcast address used for WiZ discovery.", Control: contract.SetupText},
+		contract.SetupField{Key: "timeout_ms", Environment: "WIZ_TIMEOUT_MS", Name: "Discovery timeout", Description: "UDP discovery timeout in milliseconds.", Control: contract.SetupText, Format: "integer", Advanced: true, Default: json.RawMessage(`"500"`)},
+	)}
 }
 
 func (a *App) OnStart(deps map[string]json.RawMessage) (json.RawMessage, error) {
